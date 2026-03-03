@@ -2,8 +2,6 @@
 
 class PhpCsFixerLinter extends \ArcanistExternalLinter
 {
-    const U_DIFF_FLAG = '--diff-format=udiff';
-
     /**
      * @var array
      */
@@ -36,7 +34,7 @@ class PhpCsFixerLinter extends \ArcanistExternalLinter
     /**
      * @param LinterConfiguration $configuration
      */
-    public function __construct(LinterConfiguration $configuration = null)
+    public function __construct(?LinterConfiguration $configuration = null)
     {
         if ($configuration === null) {
             $configuration = new LinterConfiguration();
@@ -49,7 +47,6 @@ class PhpCsFixerLinter extends \ArcanistExternalLinter
             version_compare($this->getVersion(), '2.8.0', '>=')
             && $this->configuration->isUnifiedDiffFormat()
         ) {
-            $this->defaultFlags[] = self::U_DIFF_FLAG;
             $unifiedDiffFormat = true;
         }
 
@@ -141,9 +138,6 @@ class PhpCsFixerLinter extends \ArcanistExternalLinter
             case 'unified_diff_format':
                 $this->configuration->setUnifiedDiffFormat($value);
                 $this->lintMessageBuilder = new LintMessageBuilder($value);
-                if ($value === false && in_array(self::U_DIFF_FLAG, $this->defaultFlags, true)) {
-                    unset($this->defaultFlags[array_search(self::U_DIFF_FLAG, $this->defaultFlags)]);
-                }
                 return;
         }
 
@@ -190,7 +184,14 @@ class PhpCsFixerLinter extends \ArcanistExternalLinter
     {
         $root = $this->getEngine()->getWorkingCopy()->getProjectRoot();
 
-        return str_replace($root . '/', '', $path);
+        $absPath = Filesystem::resolvePath($path, $root);
+        $absRoot = rtrim($root, '/') . '/';
+
+        if (strpos($absPath, $absRoot) === 0) {
+            return substr($absPath, strlen($absRoot));
+        }
+
+        return $path;
     }
 
     private function resolveLintableFiles(array $lintablePaths)

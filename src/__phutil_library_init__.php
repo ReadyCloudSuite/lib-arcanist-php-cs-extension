@@ -1,10 +1,17 @@
 <?php
 
 $vendorDir = null;
-if (file_exists(__DIR__ . '/../vendor/')) {
-    $vendorDir = __DIR__ . '/../vendor/';
-} elseif (file_exists(__DIR__ . '/../../../../vendor/')) {
-    $vendorDir = __DIR__ . '/../../../../vendor/';
+$possiblePaths = [
+    __DIR__ . '/../vendor/',
+    __DIR__ . '/../../../../vendor/',
+    __DIR__ . '/../../../../../vendor/',
+];
+
+foreach ($possiblePaths as $path) {
+    if (file_exists($path . 'ptlis/diff-parser/src/Parser.php')) {
+        $vendorDir = $path;
+        break;
+    }
 }
 
 spl_autoload_register(function($className) use ($vendorDir) {

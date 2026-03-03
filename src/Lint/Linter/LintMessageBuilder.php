@@ -66,12 +66,12 @@ class LintMessageBuilder
                             $addedOffset++;
                         }
                     }
-                    if ($line->getOperation() === Line::ADDED) {
-                        $message->setReplacementText($line->getContent());
-                    }
-                    if ($line->getOperation() === Line::REMOVED) {
-                        $message->setOriginalText($line->getContent());
-                    }
+//                    if ($line->getOperation() === Line::ADDED) {
+//                        $message->setReplacementText($line->getContent());
+//                    }
+//                    if ($line->getOperation() === Line::REMOVED) {
+//                        $message->setOriginalText($line->getContent());
+//                    }
                     $messages[$message->getLine()] = $message;
                 }
             }
