@@ -30,49 +30,41 @@ class LintMessageBuilder
     private function doBuildLintMessages($path, array $fixData)
     {
         $changeSet = (new Parser())->parseLines(explode("\n", $fixData['diff']));
-
-        /** @var \ArcanistLintMessage[] $messages */
         $messages = [];
 
-        $addedOffset = 0;
         foreach ($changeSet->getFiles() as $file) {
             foreach ($file->getHunks() as $hunk) {
+                $hunkDiff = "Suggested changes:\n";
+                $targetLine = null;
+
                 foreach ($hunk->getLines() as $line) {
                     if ($line->getOperation() === Line::UNCHANGED) {
+                        $hunkDiff .= "  " . $line->getContent() . "\n";
                         continue;
                     }
 
-                    $message = null;
-                    if ($line->getOperation() === Line::ADDED){
-                        $lineNo = $line->getNewLineNo() - $addedOffset;
-                    } else {
-                        $lineNo = $line->getOriginalLineNo();
+                    if ($targetLine === null) {
+                        $targetLine = ($line->getOperation() === Line::ADDED)
+                            ? $line->getNewLineNo()
+                            : $line->getOriginalLineNo();
                     }
 
-                    if (isset($messages[$lineNo])) {
-                        $message = $messages[$lineNo];
-                    }
+                    $prefix = ($line->getOperation() === Line::ADDED) ? "+" : "-";
+                    $hunkDiff .= $prefix . " " . $line->getContent() . "\n";
+                }
 
-                    if ($message === null) {
-                        $message = new \ArcanistLintMessage();
-                        $message->setName($this->getTrimmedAppliedFixers($fixData['appliedFixers']));
-                        $message->setPath($path);
-                        $message->setSeverity(\ArcanistLintSeverity::SEVERITY_WARNING);
-                        $message->setChar(1);
-                        $message->setLine($lineNo);
-                        $message->setCode('PHP_CS_FIXER');
+                if ($targetLine !== null) {
+                    $message = new \ArcanistLintMessage();
+                    $message->setName($this->getTrimmedAppliedFixers($fixData['appliedFixers']));
+                    $message->setPath($path);
+                    $message->setSeverity(\ArcanistLintSeverity::SEVERITY_WARNING);
+                    $message->setLine($targetLine);
+                    $message->setChar(1);
+                    $message->setCode('PHP_CS_FIXER');
 
-                        if ($line->getOperation() === Line::ADDED) {
-                            $addedOffset++;
-                        }
-                    }
-//                    if ($line->getOperation() === Line::ADDED) {
-//                        $message->setReplacementText($line->getContent());
-//                    }
-//                    if ($line->getOperation() === Line::REMOVED) {
-//                        $message->setOriginalText($line->getContent());
-//                    }
-                    $messages[$message->getLine()] = $message;
+                    $message->setDescription($hunkDiff);
+
+                    $messages[$targetLine] = $message;
                 }
             }
         }
