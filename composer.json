@@ -1,6 +1,6 @@
 {
     "name": "readycloud/lib-arcanist-php-cs-extension",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "description": "Php Cs Fixer arcanist extension",
     "type": "library",
     "repositories": [
