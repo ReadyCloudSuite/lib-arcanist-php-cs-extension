@@ -118,7 +118,7 @@ class LintMessageBuilder
         $message->setName($ruleName !== '' ? $ruleName : 'PHP-CS-Fixer');
 
         $header = $ruleDescription !== ''
-            ? "$ruleName: $ruleDescription"
+            ? $ruleDescription
             : "Suggested changes ($ruleName):";
 
         $description = "$header\n\n```\n";
