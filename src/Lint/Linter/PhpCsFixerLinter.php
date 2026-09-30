@@ -32,6 +32,11 @@ class PhpCsFixerLinter extends \ArcanistExternalLinter
     private $lintMessageBuilder;
 
     /**
+     * @var array<string, string>
+     */
+    private $ruleDescriptions = [];
+
+    /**
      * @param LinterConfiguration $configuration
      */
     public function __construct(?LinterConfiguration $configuration = null)
@@ -168,11 +173,87 @@ class PhpCsFixerLinter extends \ArcanistExternalLinter
     {
         $json = phutil_json_decode($stdout);
         $messages = [];
+        $ruleDiffProvider = function ($ruleName) use ($path) {
+            return $this->getSingleRuleDiff($path, $ruleName);
+        };
+        $ruleDescriptionProvider = function ($ruleName) {
+            return $this->getRuleDescription($ruleName);
+        };
         foreach ($json['files'] as $fix) {
-            $messages = array_merge($messages, $this->lintMessageBuilder->buildLintMessages($path, $fix));
+            $messages = array_merge(
+                $messages,
+                $this->lintMessageBuilder->buildLintMessages($path, $fix, $ruleDiffProvider, $ruleDescriptionProvider)
+            );
         }
 
         return $messages;
+    }
+
+    /**
+     * Fetches the short human-readable summary of a rule via `php-cs-fixer describe`, caching it since
+     * the same rule is described identically regardless of which file/hunk it's attributed to.
+     *
+     * @param string $ruleName
+     * @return string
+     */
+    private function getRuleDescription($ruleName)
+    {
+        if (array_key_exists($ruleName, $this->ruleDescriptions)) {
+            return $this->ruleDescriptions[$ruleName];
+        }
+
+        $future = new ExecFuture('%C describe %s', $this->getExecutableCommand(), $ruleName);
+        list(, $stdout) = $future->resolve();
+
+        $description = '';
+        if (preg_match('/^Description of the `.*?` rule\.\n\n(.*?)\n\n/ms', $stdout, $matches)) {
+            $description = trim(preg_replace('/\s+/', ' ', $matches[1]));
+        }
+
+        return $this->ruleDescriptions[$ruleName] = $description;
+    }
+
+    /**
+     * Runs the fixer against a single file with a single rule enabled, so the resulting diff
+     * can be used to figure out which lines a specific rule actually touches.
+     *
+     * php-cs-fixer refuses to accept `--config` and `--rules` together, so the only way to keep
+     * the project's config (risky-allowed, per-rule options, finder) while isolating one rule is
+     * to generate a throwaway config file that loads the real one and narrows down its rules.
+     *
+     * @param string $path
+     * @param string $ruleName
+     * @return string
+     */
+    private function getSingleRuleDiff($path, $ruleName)
+    {
+        $absolutePath = $this->getEngine()->getFilePathOnDisk($path);
+        $configAbsPath = Filesystem::resolvePath(
+            $this->configuration->getPhpCsFile(),
+            $this->getEngine()->getWorkingCopy()->getProjectRoot()
+        );
+
+        $tmpConfigPath = tempnam(sys_get_temp_dir(), 'phpcsfixer_rule_') . '.php';
+        file_put_contents($tmpConfigPath, sprintf(
+            '<?php $config = require %s; $rules = $config->getRules(); $name = %s; ' .
+            '$config->setRules([$name => $rules[$name] ?? true]); return $config;',
+            var_export($configAbsPath, true),
+            var_export($ruleName, true)
+        ));
+
+        try {
+            $future = new ExecFuture(
+                '%C fix --dry-run --diff --using-cache=no --config=%s %s',
+                $this->getExecutableCommand(),
+                $tmpConfigPath,
+                $absolutePath
+            );
+            list(, $stdout) = $future->resolve();
+
+            return $stdout;
+        } finally {
+            Filesystem::remove($tmpConfigPath);
+        }
     }
 
     public function shouldExpectCommandErrors()

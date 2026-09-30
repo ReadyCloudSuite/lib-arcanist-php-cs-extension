@@ -17,19 +17,26 @@ class LintMessageBuilder
     /**
      * @param string $path
      * @param array $fixData
+     * @param callable|null $ruleDiffProvider function(string $ruleName): string
+     * @param callable|null $ruleDescriptionProvider function(string $ruleName): string
      * @return \ArcanistLintMessage[]
      */
-    public function buildLintMessages($path, array $fixData)
-    {
+    public function buildLintMessages(
+        $path,
+        array $fixData,
+        ?callable $ruleDiffProvider = null,
+        ?callable $ruleDescriptionProvider = null
+    ) {
         if (!$this->unifiedDiffFormat) {
             return $this->guessMessages($path, $fixData);
         }
-        return $this->doBuildLintMessages($path, $fixData);
+        return $this->doBuildLintMessages($path, $fixData, $ruleDiffProvider, $ruleDescriptionProvider);
     }
 
-    private function doBuildLintMessages($path, array $fixData)
+    private function doBuildLintMessages($path, array $fixData, ?callable $ruleDiffProvider, ?callable $ruleDescriptionProvider)
     {
         $changeSet = (new Parser())->parseLines(explode("\n", $fixData['diff']));
+        $ruleBlocks = $this->collectRuleBlocks($fixData['appliedFixers'], $ruleDiffProvider);
 
         /** @var \ArcanistLintMessage[] $messages */
         $messages = [];
@@ -59,30 +66,178 @@ class LintMessageBuilder
                 }
 
                 if (!empty($minusLines) || !empty($plusLines)) {
-                    if (count($minusLines) > 5) {
-                        $minusLines = array_slice($minusLines, 0, 3);
+                    $hunkStart = $firstChangedLine ?: $hunk->getOriginalStart();
+                    $hunkEnd = empty($minusLines) ? $hunkStart : $hunkStart + count($minusLines) - 1;
+
+                    $matchedRuleBlocks = $this->matchRuleBlocksToRange($ruleBlocks, $hunkStart, $hunkEnd);
+
+                    if (!empty($matchedRuleBlocks)) {
+                        foreach ($matchedRuleBlocks as $fixer => $block) {
+                            $description = $ruleDescriptionProvider !== null ? $ruleDescriptionProvider($fixer) : '';
+                            $messages[] = $this->buildMessage(
+                                $path,
+                                $block['start'],
+                                $fixer,
+                                $block['minus'],
+                                $block['plus'],
+                                $description
+                            );
+                        }
+                    } else {
+                        $ruleName = $this->getTrimmedAppliedFixers($fixData['appliedFixers']);
+                        $messages[] = $this->buildMessage($path, $hunkStart, $ruleName, $minusLines, $plusLines, '');
                     }
-
-                    $message = new \ArcanistLintMessage();
-                    $message->setPath($path);
-                    $message->setLine($firstChangedLine ?: $hunk->getOriginalStart());
-                    $message->setChar(1);
-                    $message->setCode('CS.FIX');
-                    $message->setSeverity(\ArcanistLintSeverity::SEVERITY_WARNING);
-                    $message->setName('PHP-CS-Fixer');
-
-                    $description = "Suggested changes:\n\n```\n";
-                    if (!empty($minusLines)) $description .= implode("\n", $minusLines) . "\n";
-                    if (!empty($plusLines)) $description .= implode("\n", $plusLines) . "\n";
-                    $description .= "```\n";
-
-                    $message->setDescription($description);
-                    $messages[] = $message;
                 }
             }
         }
 
         return $messages;
+    }
+
+    /**
+     * @param string $path
+     * @param int $line
+     * @param string $ruleName
+     * @param string[] $minusLines
+     * @param string[] $plusLines
+     * @param string $ruleDescription
+     * @return \ArcanistLintMessage
+     */
+    private function buildMessage($path, $line, $ruleName, array $minusLines, array $plusLines, $ruleDescription)
+    {
+        if (count($minusLines) > 5) {
+            $minusLines = array_slice($minusLines, 0, 3);
+        }
+
+        $message = new \ArcanistLintMessage();
+        $message->setPath($path);
+        $message->setLine($line);
+        $message->setChar(1);
+        $message->setCode('CS.FIX');
+        $message->setSeverity(\ArcanistLintSeverity::SEVERITY_WARNING);
+        $message->setName($ruleName !== '' ? $ruleName : 'PHP-CS-Fixer');
+
+        $header = $ruleDescription !== ''
+            ? "$ruleName: $ruleDescription"
+            : "Suggested changes ($ruleName):";
+
+        $description = "$header\n\n```\n";
+        if (!empty($minusLines)) $description .= implode("\n", $minusLines) . "\n";
+        if (!empty($plusLines)) $description .= implode("\n", $plusLines) . "\n";
+        $description .= "```\n";
+
+        $message->setDescription($description);
+
+        return $message;
+    }
+
+    /**
+     * Runs the fixer for each individually applied rule and records which original line ranges (with the
+     * matching diff lines) it touches, so a specific hunk can later be attributed to the rule(s) that
+     * actually changed it, each with its own diff.
+     *
+     * @param string[] $appliedFixers
+     * @param callable|null $ruleDiffProvider
+     * @return array<string, array<array{start: int, end: int, minus: string[], plus: string[]}>>
+     */
+    private function collectRuleBlocks(array $appliedFixers, ?callable $ruleDiffProvider)
+    {
+        if ($ruleDiffProvider === null) {
+            return [];
+        }
+
+        $ruleBlocks = [];
+        foreach ($appliedFixers as $fixer) {
+            $ruleBlocks[$fixer] = $this->extractChangedBlocks($ruleDiffProvider($fixer));
+        }
+
+        return $ruleBlocks;
+    }
+
+    /**
+     * @param array<string, array<array{start: int, end: int, minus: string[], plus: string[]}>> $ruleBlocks
+     * @param int $hunkStart
+     * @param int $hunkEnd
+     * @return array<string, array{start: int, end: int, minus: string[], plus: string[]}>
+     */
+    private function matchRuleBlocksToRange(array $ruleBlocks, $hunkStart, $hunkEnd)
+    {
+        $matched = [];
+        foreach ($ruleBlocks as $fixer => $blocks) {
+            foreach ($blocks as $block) {
+                if ($hunkStart <= $block['end'] && $block['start'] <= $hunkEnd) {
+                    $matched[$fixer] = $block;
+                    break;
+                }
+            }
+        }
+
+        return $matched;
+    }
+
+    /**
+     * Parses a single-rule diff and returns the original-file line ranges it touched, along with the
+     * diff lines for each range.
+     *
+     * @param string $diff
+     * @return array<array{start: int, end: int, minus: string[], plus: string[]}>
+     */
+    private function extractChangedBlocks($diff)
+    {
+        if (trim((string) $diff) === '') {
+            return [];
+        }
+
+        $blocks = [];
+        $changeSet = (new Parser())->parseLines(explode("\n", $diff));
+
+        foreach ($changeSet->getFiles() as $file) {
+            foreach ($file->getHunks() as $hunk) {
+                $currentLine = $hunk->getOriginalStart();
+                $firstChangedLine = null;
+                $minusLines = [];
+                $plusLines = [];
+
+                foreach ($hunk->getLines() as $line) {
+                    $op = $line->getOperation();
+                    $isRemoved = ($op === 2 || $op === '-' || $op === 'removed');
+                    $isAdded = ($op === 1 || $op === '+' || $op === 'added');
+
+                    if ($isRemoved) {
+                        if ($firstChangedLine === null) $firstChangedLine = $currentLine;
+                        $minusLines[] = "-" . $line->getContent();
+                        $currentLine++;
+                    } elseif ($isAdded) {
+                        if ($firstChangedLine === null) $firstChangedLine = $currentLine;
+                        $plusLines[] = "+" . $line->getContent();
+                    } else {
+                        if ($firstChangedLine !== null) {
+                            $blocks[] = [
+                                'start' => $firstChangedLine,
+                                'end' => empty($minusLines) ? $firstChangedLine : $firstChangedLine + count($minusLines) - 1,
+                                'minus' => $minusLines,
+                                'plus' => $plusLines,
+                            ];
+                            $firstChangedLine = null;
+                            $minusLines = [];
+                            $plusLines = [];
+                        }
+                        $currentLine++;
+                    }
+                }
+
+                if ($firstChangedLine !== null) {
+                    $blocks[] = [
+                        'start' => $firstChangedLine,
+                        'end' => empty($minusLines) ? $firstChangedLine : $firstChangedLine + count($minusLines) - 1,
+                        'minus' => $minusLines,
+                        'plus' => $plusLines,
+                    ];
+                }
+            }
+        }
+
+        return $blocks;
     }
 
     /**

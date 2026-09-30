@@ -1,5 +1,6 @@
 {
-    "name": "paysera/lib-arcanist-php-cs-extension",
+    "name": "readycloud/lib-arcanist-php-cs-extension",
+    "version": "1.0.2",
     "description": "Php Cs Fixer arcanist extension",
     "type": "library",
     "repositories": [
